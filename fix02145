@@ -1,0 +1,988 @@
+wait(13)
+if not getgenv then getgenv = function() return _G end end
+local env = getgenv()
+
+if not env.DragonFarmConfig then
+    warn("⚠️ ไม่พบ Config! กำลังใช้ค่าเริ่มต้น...")
+    env.DragonFarmConfig = {
+        BLACK_SCREEN = false,
+        BLACK_SCREEN_KEY = Enum.KeyCode.F8,
+        SELL_THRESHOLD = 10000,
+        MOVEMENT_SPEED = 1.5,
+        ATTACK_DELAY = 0.03,
+        FPS_BOOST_ENABLED = true,
+        TARGET_FPS = 60,
+        SHOW_FRUIT_GUI = true,
+        SHOW_COIN_GUI = true,
+        GUI_UPDATE_RATE = 0.5
+    }
+end
+
+local CONFIG = env.DragonFarmConfig
+
+--// 📦 SERVICES & VARIABLES
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local hrp = character:WaitForChild("HumanoidRootPart", 10)
+
+--// ✅ ป้องกัน Infinite yield ด้วย Timeout
+local function safeWaitForChild(parent, childName, timeout)
+    timeout = timeout or 5
+    local startTime = tick()
+    
+    while tick() - startTime < timeout do
+        local child = parent:FindFirstChild(childName)
+        if child then return child end
+        task.wait(0.1)
+    end
+    
+    warn("⚠️ ไม่พบ", childName, "ใน", parent:GetFullName(), "หลัง", timeout, "วินาที")
+    return nil
+end
+
+--// ✅ ตรวจหา folder อาหาร (ป้องกัน nil)
+local Interactions = workspace:FindFirstChild("Interactions")
+local Nodes = Interactions and Interactions:FindFirstChild("Nodes")
+local FoodFolder = nil
+
+if Nodes then
+    FoodFolder = Nodes:FindFirstChild("Food") 
+        or Nodes:FindFirstChild("LargeFoodNode") 
+        or Nodes:FindFirstChild("Foods") 
+        or Nodes:FindFirstChildWhichIsA("Folder")
+end
+
+if not FoodFolder then
+    warn("⚠️ ไม่พบโฟลเดอร์ Food ในโลกนี้ → ข้ามการฟาร์ม")
+end
+
+local CollectableNames = { "EdamameFoodModel", "KajiFruitFoodModel", "MistSudachiFoodModel" }
+
+local FARM_WORLD = 125804922932357
+local SELL_WORLD = 3475397644
+local RANDOM_WORLDS = {
+    3475419198, 3475422608, 3487210751,
+    3623549100, 3737848045, 3752680052, 4174118306, 4728805070
+}
+
+local PATROL_POSITIONS = {
+    Vector3.new(-266, 467, -394),
+    Vector3.new(1757, 783, 672),
+    Vector3.new(1420, 319, -1409),
+    Vector3.new(1922, 620, -2566),
+    Vector3.new(2226, 585, -4128),
+    Vector3.new(330, 901, -4304),
+    Vector3.new(-1433, 779, -4717),
+    Vector3.new(-3031, 780, -4211),
+    Vector3.new(-2643, 547, -2250),
+    Vector3.new(-857, 401, -2132),
+    Vector3.new(-828, 688, -3444),
+    Vector3.new(-1819, 405, 170),
+    Vector3.new(-1523, 962, 1150)
+}
+
+--// ##############################
+--// 🧩 ฟังก์ชันเช็คโฟลเดอร์มังกร (ป้องกัน nil)
+--// ##############################
+local function getDragonFolder()
+    local chars = workspace:FindFirstChild("Characters")
+    if not chars then return nil end
+
+    local playerChar = safeWaitForChild(chars, player.Name, 3)
+    if not playerChar then return nil end
+
+    local dragons = safeWaitForChild(playerChar, "Dragons", 3)
+    if not dragons or #dragons:GetChildren() == 0 then
+        return nil
+    end
+
+    return dragons
+end
+
+----------------------------------------------------
+-- ⚙️ โหมดประหยัด + FPS Booster
+pcall(function()
+	-- ลบพาร์ติเคิล เอฟเฟค
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Smoke") or d:IsA("Fire") then
+			d.Enabled = false
+		elseif d:IsA("Decal") or d:IsA("Texture") then
+			d.Transparency = 1
+		elseif d:IsA("Explosion") then
+			d:Destroy()
+		elseif d:IsA("PointLight") or d:IsA("SpotLight") or d:IsA("SurfaceLight") then
+			d.Enabled = false
+		end
+	end
+	function removeWorkspaceGui()
+    local Players = game:GetService("Players")
+    local player = Players.LocalPlayer
+
+
+    while not player:FindFirstChild("PlayerGui") do
+        task.wait()
+    end
+
+    local gui = player:FindFirstChild("PlayerGui")
+    local target = gui:FindFirstChild("WorkspaceGui")
+
+    if target then
+        target:Destroy()
+        print("กาก")
+    else
+        print("กาก")
+    end
+end
+end)
+removeWorkspaceGui()
+
+--// ##############################
+--// 🟥 Unequip มังกร (ป้องกัน error)
+--// ##############################
+task.spawn(function()
+    task.wait(2)
+    
+    local success, err = pcall(function()
+        local dragons = getDragonFolder()
+        if not dragons then
+            warn("❌ ไม่พบโฟลเดอร์ Dragons — ข้าม Unequip")
+            return
+        end
+
+        local remotes = safeWaitForChild(ReplicatedStorage, "Remotes", 5)
+        if not remotes then return end
+        
+        local unequipRemote = remotes:FindFirstChild("UnequipDragonRemote")
+        if unequipRemote then
+            local args = {"1"}
+            unequipRemote:InvokeServer(unpack(args))
+            print("🐉 Unequip Dragon สำเร็จ")
+        end
+    end)
+    
+    if not success then
+        warn("❌ Unequip Dragon Error:", err)
+    end
+end)
+
+--// ##############################
+--// 🔄 Auto Equip มังกร 1-5 (วนลูป)
+--// ##############################
+task.spawn(function()
+    task.wait(3)
+    
+    while true do
+        for id = 1, 5 do
+            pcall(function()
+                local remotes = safeWaitForChild(ReplicatedStorage, "Remotes", 5)
+                if not remotes then return end
+                
+                local equipRemote = remotes:FindFirstChild("EquipDragonRemote")
+                if equipRemote then
+                    local args = { tostring(id) }
+                    equipRemote:InvokeServer(unpack(args))
+                    print("🐲 Equip Dragon ID:", id)
+                end
+            end)
+            task.wait(4)
+        end
+    end
+end)
+
+
+
+
+--// ##############################
+--// 🐉 ขี่ + ฟื้นมังกรอัตโนมัติ (ป้องกัน infinite yield)
+--// ##############################
+local function getAutoDragon()
+    local chars = workspace:FindFirstChild("Characters")
+    if not chars then return nil end
+    
+    local playerChar = chars:FindFirstChild(player.Name)
+    if not playerChar then return nil end
+    
+    local dragonFolder = playerChar:FindFirstChild("Dragons")
+    if not dragonFolder then return nil end
+    
+    local dragons = dragonFolder:GetChildren()
+    return #dragons > 0 and dragons[1] or nil
+end
+
+local function reviveDragon(dragonModel)
+    local success, err = pcall(function()
+        local dragonName = dragonModel.Name
+        local data = dragonModel:FindFirstChild("Data")
+        local deadFlag = data and data:FindFirstChild("Dead")
+
+        if deadFlag and deadFlag.Value == true then
+            print("💀 มังกร", dragonName, "ตาย — กำลังฟื้นคืนชีพ...")
+            
+            local remotes = safeWaitForChild(ReplicatedStorage, "Remotes", 5)
+            if not remotes then return end
+            
+            local reviveRemote = remotes:FindFirstChild("ReviveDragonRemote")
+            if reviveRemote then
+                local args = { dragonName, "DragonRevivalHeart" }
+                reviveRemote:InvokeServer(unpack(args))
+                print("❤️ ฟื้นมังกรสำเร็จ:", dragonName)
+                task.wait(1)
+            end
+        end
+    end)
+    
+    if not success then
+        warn("❌ Revive Error:", err)
+    end
+end
+
+local function ensureMountedDragon()
+    local dragonModel = getAutoDragon()
+    if not dragonModel then return end
+
+    reviveDragon(dragonModel)
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local currentSeat = humanoid and humanoid.SeatPart
+    local currentMount = currentSeat and currentSeat:FindFirstAncestorWhichIsA("Model")
+
+    if currentMount and currentMount:IsDescendantOf(dragonModel.Parent) then
+        return
+    end
+
+    local seat = dragonModel:FindFirstChildWhichIsA("Seat", true)
+    if seat and humanoid then
+        seat:Sit(humanoid)
+        print("🪶 ขี่มังกร:", dragonModel.Name)
+
+        task.wait(1)
+        pcall(function()
+            local flyBtn = player.PlayerGui
+                :WaitForChild("HUDGui", 5)
+                .BottomFrame.CurrentDragonFrame.DragonControlsFrame.Other
+                :FindFirstChild("Fly")
+
+            if flyBtn and flyBtn:FindFirstChild("MouseButton1Down") then
+                firesignal(flyBtn.MouseButton1Down)
+                print("🛫 บินแล้ว!")
+            end
+        end)
+    end
+end
+
+task.spawn(function()
+    while true do
+        task.wait(2)
+        pcall(ensureMountedDragon)
+    end
+end)
+
+player.CharacterAdded:Connect(function(newChar)
+    task.wait(3)
+    character = newChar
+    hrp = character:WaitForChild("HumanoidRootPart", 10)
+    pcall(ensureMountedDragon)
+end)
+
+--// ##############################
+--// ⌨️ Auto กดปุ่ม Q เมื่อมังกรไม่บิน
+--// ##############################
+local function enableFlyControlUseSpace()
+    pcall(function()
+        local data = safeWaitForChild(player, "Data", 5)
+        if not data then return end
+
+        local settings = safeWaitForChild(data, "Settings", 5)
+        if not settings then return end
+
+        local flyControlValue = settings:FindFirstChild("FlyControlUseSpace")
+        if flyControlValue and flyControlValue.Value == true then
+            flyControlValue.Value = false
+            print("✅ เปิด FlyControlUseSpace แล้ว")
+        end
+    end)
+end
+
+local function pressQ()
+    local VIM = game:GetService("VirtualInputManager")
+    VIM:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
+    task.wait(0.05)
+    VIM:SendKeyEvent(false, Enum.KeyCode.Q, false, game)
+end
+
+local function getDragonFlyingState()
+    local success, result = pcall(function()
+        local chars = workspace:FindFirstChild("Characters")
+        if not chars then return false end
+        
+        local playerChar = chars:FindFirstChild(player.Name)
+        if not playerChar then return false end
+        
+        local dragonsFolder = playerChar:FindFirstChild("Dragons")
+        if not dragonsFolder then return false end
+
+        for _, dragon in ipairs(dragonsFolder:GetChildren()) do
+            if dragon:IsA("Model") then
+                local dataFolder = dragon:FindFirstChild("Data")
+                if dataFolder then
+                    local flyingValue = dataFolder:FindFirstChild("Flying")
+                    if flyingValue then
+                        return flyingValue.Value == true
+                    end
+                end
+            end
+        end
+        return false
+    end)
+    
+    return success and result or false
+end
+
+task.spawn(function()
+    task.wait(5)
+    enableFlyControlUseSpace()
+    
+    while true do
+        task.wait(0.5)
+        
+        local isFlying = getDragonFlyingState()
+        if not isFlying then
+            print("⚠️ มังกรตก → กดปุ่ม Q!")
+            pressQ()
+            task.wait(0.1)
+            pressQ()
+        end
+    end
+end)
+
+--// ⚡ FPS BOOST + BLACK SCREEN
+local Lighting = game:GetService("Lighting")
+local UIS = game:GetService("UserInputService")
+local blackScreenGui
+
+local function toggleBlackScreen()
+    if not CONFIG.BLACK_SCREEN then return end
+
+    if blackScreenGui and blackScreenGui.Enabled then
+        blackScreenGui.Enabled = false
+        print("🟢 ปิดจอดำแล้ว")
+    else
+        if not blackScreenGui then
+            blackScreenGui = Instance.new("ScreenGui")
+            blackScreenGui.Name = "__BlackScreen"
+            blackScreenGui.IgnoreGuiInset = true
+            blackScreenGui.ResetOnSpawn = false
+            blackScreenGui.DisplayOrder = -1
+            blackScreenGui.Parent = game.CoreGui
+
+            local frame = Instance.new("Frame")
+            frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+            frame.Size = UDim2.new(1, 0, 1, 0)
+            frame.Parent = blackScreenGui
+        end
+        blackScreenGui.Enabled = true
+        print("🖤 เปิดโหมดจอดำ")
+    end
+end
+
+local function enableFPSBoost()
+    if not CONFIG.FPS_BOOST_ENABLED then return end
+    print("⚙️ เปิดโหมด FPS Booster...")
+
+    for _, v in ipairs(Lighting:GetChildren()) do
+        if v:IsA("BloomEffect") or v:IsA("BlurEffect") or v:IsA("ColorCorrectionEffect") then
+            v.Enabled = false
+        end
+    end
+    Lighting.GlobalShadows = false
+    Lighting.FogEnd = 1e6
+
+    if setfpscap then
+        setfpscap(60)
+        task.delay(4, function()
+            setfpscap(240)
+            print("🚀 ปลดล็อก FPS เป็น 240!")
+        end)
+    end
+
+    toggleBlackScreen()
+    
+    UIS.InputBegan:Connect(function(input, gpe)
+        if not gpe and input.KeyCode == CONFIG.BLACK_SCREEN_KEY then
+            toggleBlackScreen()
+        end
+    end)
+end
+
+--// 🛡️ REMOVE MOB DAMAGE
+local function removeMobDamageRemote()
+    pcall(function()
+        local remotes = safeWaitForChild(ReplicatedStorage, "Remotes", 5)
+        if not remotes then return end
+
+        for i = 1, 15 do
+            for _, obj in ipairs(remotes:GetDescendants()) do
+                if obj.Name == "MobDamageRemote" then
+                    obj:Destroy()
+                end
+            end
+            task.wait(1)
+        end
+    end)
+end
+
+--// 🐉 DRAGON ATTACK
+local function getAnyDragonRemote()
+    local dragonsFolder = character:FindFirstChild("Dragons")
+    if not dragonsFolder then return nil end
+    
+    for _, dragon in pairs(dragonsFolder:GetChildren()) do
+        local remotes = dragon:FindFirstChild("Remotes")
+        if remotes then
+            local soundRemote = remotes:FindFirstChild("PlaySoundRemote")
+            if soundRemote then return soundRemote end
+        end
+    end
+    return nil
+end
+
+local function spamAttack(targetPart)
+    local remote = getAnyDragonRemote()
+    if not remote then return false end
+    
+    local health = targetPart:FindFirstChild("Health")
+    if not health then return false end
+
+    while health and health.Value > 0 and targetPart.Parent do
+        pcall(function()
+            local args = {"Breath", "Destructibles", targetPart}
+            remote:FireServer(unpack(args))
+        end)
+        task.wait(CONFIG.ATTACK_DELAY)
+    end
+    return true
+end
+
+--// 🍎 FOOD NODE FUNCTIONS
+local function getAllAliveNodes()
+    if not FoodFolder then return {} end
+    
+    local aliveNodes = {}
+    for _, subFolder in pairs(FoodFolder:GetChildren()) do
+        for _, node in pairs(subFolder:GetDescendants()) do
+            pcall(function()
+                if node:FindFirstChild("Health") and node.Health.Value > 0 then
+                    table.insert(aliveNodes, node)
+                end
+            end)
+        end
+    end
+    return aliveNodes
+end
+
+local function collectNearbyFoods()
+    pcall(function()
+        for _, obj in pairs(workspace.Camera:GetChildren()) do
+            for _, name in ipairs(CollectableNames) do
+                if obj.Name == name then
+                    for _, part in pairs(obj:GetDescendants()) do
+                        if part:IsA("BasePart") and hrp then
+                            part.CFrame = hrp.CFrame
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function getClosestAliveNode()
+    local aliveNodes = getAllAliveNodes()
+    local closestNode, closestDist = nil, math.huge
+
+    for _, node in ipairs(aliveNodes) do
+        pcall(function()
+            if node and node.Parent and hrp then
+                local part = node:IsA("BasePart") and node or node:FindFirstChildWhichIsA("BasePart", true)
+                if part then
+                    local dist = (hrp.Position - part.Position).Magnitude
+                    if dist < closestDist then
+                        closestDist = dist
+                        closestNode = node
+                    end
+                end
+            end
+        end)
+    end
+
+    return closestNode
+end
+
+local function getNodeBasePart(node)
+    if not node then return nil end
+    if node:IsA("BasePart") then return node end
+    if node:IsA("Model") then
+        return node.PrimaryPart or node:FindFirstChildWhichIsA("BasePart", true)
+    end
+    return nil
+end
+
+local function startAutoFarm()
+    task.spawn(function()
+        while true do
+            pcall(function()
+                local node = getClosestAliveNode()
+                local base = getNodeBasePart(node)
+
+                if node and base and hrp then
+                    print("🌳 พบต้นไม้:", node.Name)
+                    hrp.CFrame = base.CFrame + Vector3.new(0, 4, 0)
+                    task.wait(2)
+                    spamAttack(base)
+                else
+                    warn("⚠️ ไม่พบต้นไม้ → patrol")
+                    for _, pos in ipairs(PATROL_POSITIONS) do
+                        if hrp then hrp.CFrame = CFrame.new(pos) end
+                        task.wait(CONFIG.MOVEMENT_SPEED)
+                        
+                        local found = getClosestAliveNode()
+                        if found then break end
+                    end
+                end
+            end)
+            task.wait(1)
+        end
+    end)
+end
+
+local function startAutoCollect()
+    task.spawn(function()
+        while task.wait(1) do
+            collectNearbyFoods()
+        end
+    end)
+end
+
+--// 💰 SELL FUNCTIONS
+local function sellAllItems()
+    pcall(function()
+        local data = safeWaitForChild(player, "Data", 5)
+        if not data then return end
+        
+        local resources = safeWaitForChild(data, "Resources", 5)
+        if not resources then return end
+        
+        for _, item in ipairs({"Edamame", "KajiFruit", "MistSudachi"}) do
+            local val = resources:FindFirstChild(item)
+            if val and val.Value > 0 then
+                local remotes = safeWaitForChild(ReplicatedStorage, "Remotes", 5)
+                if remotes then
+                    local sellRemote = remotes:FindFirstChild("SellItemRemote")
+                    if sellRemote then
+                        local args = {{ ItemName = item, Amount = val.Value }}
+                        sellRemote:FireServer(unpack(args))
+                        print("💰 ขาย:", item, "จำนวน", val.Value)
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function startCheckInventory()
+    task.spawn(function()
+        while task.wait(2) do
+            pcall(function()
+                local data = player:FindFirstChild("Data")
+                if not data then return end
+                
+                local resources = data:FindFirstChild("Resources")
+                if not resources then return end
+                
+                local eda = resources:FindFirstChild("Edamame")
+                local kaji = resources:FindFirstChild("KajiFruit")
+                local mist = resources:FindFirstChild("MistSudachi")
+                
+                local edaVal = eda and eda.Value or 0
+                local kajiVal = kaji and kaji.Value or 0
+                local mistVal = mist and mist.Value or 0
+
+                if edaVal >= CONFIG.SELL_THRESHOLD 
+                    or kajiVal >= CONFIG.SELL_THRESHOLD 
+                    or mistVal >= CONFIG.SELL_THRESHOLD then
+                    print("📦 มีของถึง", CONFIG.SELL_THRESHOLD, "→ วาร์ปไปขาย...")
+                    task.wait(5)
+                    
+                    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+                    if remotes then
+                        local tpRemote = remotes:FindFirstChild("WorldTeleportRemote")
+                        if tpRemote then
+                            tpRemote:InvokeServer(SELL_WORLD, {})
+                        end
+                    end
+                end
+            end)
+        end
+    end)
+end
+
+--// 👁️ PLAYER MONITOR
+local function monitorPlayers()
+    task.spawn(function()
+        while true do
+            task.wait(2)
+            
+            pcall(function()
+                local playerCount = #Players:GetPlayers()
+                local currentPlace = game.PlaceId
+
+                if playerCount > 1 then
+                    warn("⚠️ พบผู้เล่นอื่น → วาร์ปโลกสุ่ม")
+                    task.wait(3)
+                    
+                    local randomWorld = RANDOM_WORLDS[math.random(1, #RANDOM_WORLDS)]
+                    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+                    if remotes then
+                        local tpRemote = remotes:FindFirstChild("WorldTeleportRemote")
+                        if tpRemote then
+                            tpRemote:InvokeServer(randomWorld, {})
+                        end
+                    end
+                    task.wait(10)
+                end
+
+                if currentPlace ~= FARM_WORLD and currentPlace ~= SELL_WORLD then
+                    warn("🚫 อยู่นอกโลก → กลับฟาร์ม")
+                    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+                    if remotes then
+                        local tpRemote = remotes:FindFirstChild("WorldTeleportRemote")
+                        if tpRemote then
+                            tpRemote:InvokeServer(FARM_WORLD, {})
+                        end
+                    end
+                    task.wait(5)
+                end
+            end)
+        end
+    end)
+end
+
+--// 🧹 ลบเอฟเฟกต์ภาพทั้งหมด (เพิ่ม FPS)
+local function removeAllEffects()
+    pcall(function()
+        print("🗑️ เริ่มลบเอฟเฟกต์และโมเดลตกแต่ง...")
+        
+        -- ลบ Lighting Effects
+        for _, effect in ipairs(Lighting:GetChildren()) do
+            if effect:IsA("BloomEffect") or effect:IsA("BlurEffect") 
+                or effect:IsA("ColorCorrectionEffect") or effect:IsA("DepthOfFieldEffect")
+                or effect:IsA("SunRaysEffect") or effect:IsA("Atmosphere") 
+                or effect:IsA("Sky") then
+                effect:Destroy()
+            end
+        end
+        
+        -- ปิด Shadows & Fog
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 9e9
+        Lighting.Brightness = 2
+        
+        -- ลบ Particles, Textures, Decals
+        local removed = 0
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            pcall(function()
+                if obj:IsA("ParticleEmitter") or obj:IsA("Trail") 
+                    or obj:IsA("Smoke") or obj:IsA("Fire") 
+                    or obj:IsA("Sparkles") or obj:IsA("Beam") then
+                    obj:Destroy()
+                    removed += 1
+                elseif obj:IsA("Decal") or obj:IsA("Texture") then
+                    obj.Transparency = 1
+                    removed += 1
+                elseif obj:IsA("BasePart") then
+                    obj.CastShadow = false
+                    obj.Material = Enum.Material.SmoothPlastic
+                    obj.Reflectance = 0
+                end
+            end)
+        end
+        
+        print("✅ ลบเอฟเฟกต์เสร็จ:", removed, "รายการ")
+    end)
+end
+
+--// 🚀 BOOST FPS สูงสุด
+local function maximizeFPS()
+    pcall(function()
+        print("⚡ เริ่มบูส FPS...")
+        
+        -- ตั้งค่า Rendering
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+        
+        -- ปิด Terrain Effects
+        local terrain = workspace:FindFirstChildOfClass("Terrain")
+        if terrain then
+            terrain.WaterWaveSize = 0
+            terrain.WaterWaveSpeed = 0
+            terrain.WaterReflectance = 0
+            terrain.WaterTransparency = 1
+        end
+        
+        -- ตั้งค่า FPS Cap
+        if setfpscap then
+            setfpscap(60)
+            print("🎯 ตั้ง FPS ชั่วคราวที่ 60")
+            task.delay(4, function()
+                setfpscap(240)
+                print("🚀 ปลดล็อก FPS เป็น 240!")
+            end)
+        end
+        
+        -- เปิด Streaming
+        workspace.StreamingEnabled = true
+        workspace.StreamingMinRadius = 64
+        workspace.StreamingTargetRadius = 128
+        
+        print("✅ บูส FPS เสร็จสมบูรณ์!")
+    end)
+end
+
+--// 🎨 GUI SYSTEM (พร้อมดูผลไม้)
+local function createGUI()
+    pcall(function()
+        if game.CoreGui:FindFirstChild("FarmGUI") then
+            game.CoreGui.FarmGUI:Destroy()
+        end
+
+        local screenGui = Instance.new("ScreenGui")
+        screenGui.Name = "FarmGUI"
+        screenGui.ResetOnSpawn = false
+        screenGui.Parent = game.CoreGui
+
+        -- 💰 Coin Display
+        if CONFIG.SHOW_COIN_GUI then
+            local coinLabel = Instance.new("TextLabel")
+            coinLabel.Name = "CoinLabel"
+            coinLabel.Size = UDim2.new(0, 250, 0, 60)
+            coinLabel.Position = UDim2.new(0.5, -125, 0.05, 0)
+            coinLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+            coinLabel.BackgroundTransparency = 0.3
+            coinLabel.BorderSizePixel = 0
+            coinLabel.TextColor3 = Color3.fromRGB(255, 223, 0)
+            coinLabel.TextStrokeTransparency = 0.5
+            coinLabel.TextScaled = true
+            coinLabel.Font = Enum.Font.GothamBold
+            coinLabel.Text = "💰 Loading..."
+            coinLabel.Parent = screenGui
+
+            local corner = Instance.new("UICorner")
+            corner.CornerRadius = UDim.new(0, 12)
+            corner.Parent = coinLabel
+
+            task.spawn(function()
+                while task.wait(CONFIG.GUI_UPDATE_RATE) do
+                    pcall(function()
+                        local data = player:FindFirstChild("Data")
+                        if data then
+                            local currency = data:FindFirstChild("Currency")
+                            if currency then
+                                local coins = currency:FindFirstChild("Coins")
+                                if coins then
+                                    coinLabel.Text = string.format("💰 %s", tostring(coins.Value))
+                                end
+                            end
+                        end
+                    end)
+                end
+            end)
+        end
+
+        -- 🍎 Fruit Display
+        if CONFIG.SHOW_FRUIT_GUI then
+            local fruitFrame = Instance.new("Frame")
+            fruitFrame.Name = "FruitFrame"
+            fruitFrame.Size = UDim2.new(0, 300, 0, 180)
+            fruitFrame.Position = UDim2.new(0.5, -150, 0.15, 0)
+            fruitFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+            fruitFrame.BackgroundTransparency = 0.3
+            fruitFrame.BorderSizePixel = 0
+            fruitFrame.Parent = screenGui
+
+            local frameCorner = Instance.new("UICorner")
+            frameCorner.CornerRadius = UDim.new(0, 12)
+            frameCorner.Parent = fruitFrame
+
+            -- Title
+            local title = Instance.new("TextLabel")
+            title.Size = UDim2.new(1, 0, 0, 35)
+            title.Position = UDim2.new(0, 0, 0, 0)
+            title.BackgroundTransparency = 1
+            title.Text = "🌟 INVENTORY 🌟"
+            title.TextColor3 = Color3.fromRGB(255, 255, 255)
+            title.Font = Enum.Font.GothamBold
+            title.TextSize = 18
+            title.Parent = fruitFrame
+
+            local fruits = {
+                {name = "Edamame", icon = "🫘", color = Color3.fromRGB(144, 238, 144)},
+                {name = "KajiFruit", icon = "🍊", color = Color3.fromRGB(255, 165, 0)},
+                {name = "MistSudachi", icon = "🍋", color = Color3.fromRGB(255, 255, 102)}
+            }
+
+            for i, fruit in ipairs(fruits) do
+                local label = Instance.new("TextLabel")
+                label.Name = fruit.name .. "Label"
+                label.Size = UDim2.new(1, -20, 0, 40)
+                label.Position = UDim2.new(0, 10, 0, 35 + (i-1) * 45)
+                label.BackgroundTransparency = 1
+                label.TextColor3 = fruit.color
+                label.TextStrokeTransparency = 0.5
+                label.TextScaled = true
+                label.Font = Enum.Font.GothamBold
+                label.TextXAlignment = Enum.TextXAlignment.Left
+                label.Text = fruit.icon .. " Loading..."
+                label.Parent = fruitFrame
+            end
+
+            task.spawn(function()
+                while task.wait(CONFIG.GUI_UPDATE_RATE) do
+                    pcall(function()
+                        local data = player:FindFirstChild("Data")
+                        if not data then return end
+                        
+                        local resources = data:FindFirstChild("Resources")
+                        if not resources then return end
+                        
+                        for i, fruit in ipairs(fruits) do
+                            local val = resources:FindFirstChild(fruit.name)
+                            if val then
+                                local label = fruitFrame:FindFirstChild(fruit.name .. "Label")
+                                if label then
+                                    local amount = val.Value
+                                    local percentage = math.floor((amount / CONFIG.SELL_THRESHOLD) * 100)
+                                    label.Text = string.format("%s %s: %d (%d%%)", 
+                                        fruit.icon, fruit.name, amount, percentage)
+                                    
+                                    -- เปลี่ยนสีตามเปอร์เซ็นต์
+                                    if percentage >= 100 then
+                                        label.TextColor3 = Color3.fromRGB(0, 255, 0) -- เขียว (พร้อมขาย)
+                                    elseif percentage >= 50 then
+                                        label.TextColor3 = Color3.fromRGB(255, 255, 0) -- เหลือง
+                                    else
+                                        label.TextColor3 = fruit.color -- สีปกติ
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                end
+            end)
+        end
+    end)
+end
+
+--// 🔄 ANTI-AFK
+local function startAntiAFK()
+    task.spawn(function()
+        local VIM = game:GetService("VirtualInputManager")
+        while true do
+            task.wait(180)
+            pcall(function()
+                VIM:SendKeyEvent(true, Enum.KeyCode.A, false, game)
+                task.wait(0.1)
+                VIM:SendKeyEvent(false, Enum.KeyCode.A, false, game)
+            end)
+        end
+    end)
+end
+
+--// ⏱️ AUTO RETURN FROM SELL WORLD
+local function autoReturnFromSellWorld()
+    task.spawn(function()
+        local timeInSell = 0
+        
+        while true do
+            task.wait(1)
+            
+            pcall(function()
+                local currentPlace = game.PlaceId
+                
+                if currentPlace == SELL_WORLD then
+                    timeInSell += 1
+                    print("⏱️ อยู่ SELL WORLD:", timeInSell, "วินาที")
+                    
+                    if timeInSell >= 25 then
+                        warn("⚠️ อยู่ SELL WORLD นานเกิน → วาร์ปกลับ!")
+                        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+                        if remotes then
+                            local tpRemote = remotes:FindFirstChild("WorldTeleportRemote")
+                            if tpRemote then
+                                tpRemote:InvokeServer(FARM_WORLD, {})
+                            end
+                        end
+                        timeInSell = 0
+                    end
+                else
+                    timeInSell = 0
+                end
+            end)
+        end
+    end)
+end
+
+--// 🚀 MAIN EXECUTION
+removeAllEffects()  -- ลบเอฟเฟกต์ก่อน
+maximizeFPS()       -- บูส FPS
+createGUI()
+startAntiAFK()
+enableFPSBoost()
+autoReturnFromSellWorld()
+
+task.wait(2)
+
+local placeId = game.PlaceId
+
+if placeId == FARM_WORLD then
+    print("🚜 อยู่ในโลกฟาร์ม")
+    startAutoFarm()
+    startAutoCollect()
+    startCheckInventory()
+    monitorPlayers()
+    task.wait(5)
+    removeMobDamageRemote()
+
+elseif placeId == SELL_WORLD then
+    print("💰 อยู่ในโลกขาย")
+    task.wait(2)
+    sellAllItems()
+    task.wait(3)
+    
+    pcall(function()
+        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+        if remotes then
+            local tpRemote = remotes:FindFirstChild("WorldTeleportRemote")
+            if tpRemote then
+                tpRemote:InvokeServer(FARM_WORLD, {})
+            end
+        end
+    end)
+
+else
+    print("🌍 อยู่นอกโลก → วาร์ปกลับฟาร์ม")
+    pcall(function()
+        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+        if remotes then
+            local tpRemote = remotes:FindFirstChild("WorldTeleportRemote")
+            if tpRemote then
+                tpRemote:InvokeServer(FARM_WORLD, {})
+            end
+        end
+    end)
+    return
+end
+
+print("✅ สคริปต์เริ่มทำงานเสร็จสมบูรณ์!")
